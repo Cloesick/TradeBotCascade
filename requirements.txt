@@ -1,12 +1,23 @@
-fastapi==0.68.1
-uvicorn==0.15.0
-pandas==1.3.3
-numpy==1.21.2
-python-dotenv==0.19.0
-yfinance==0.1.63
-scikit-learn==0.24.2
-ta==0.7.0
-python-jose==3.3.0
-passlib==1.7.4
-bcrypt==3.2.0
-python-multipart==0.0.5
+# Core API framework
+fastapi>=0.110.0,<0.112.0
+uvicorn[standard]>=0.27.0,<0.31.0
+pydantic>=2.6.0,<3.0.0
+
+# Data processing
+pandas>=2.2.0,<3.0.0
+numpy>=1.26.0,<2.0.0
+
+# Financial data
+yfinance>=0.2.36,<0.3.0
+
+# Technical analysis
+ta>=0.11.0,<0.12.0
+scikit-learn>=1.4.0,<2.0.0
+
+# Authentication & Security
+python-jose[cryptography]>=3.3.0,<4.0.0
+passlib[bcrypt]>=1.7.4,<2.0.0
+python-multipart>=0.0.9,<0.1.0
+
+# Configuration
+python-dotenv>=1.0.0,<2.0.0

@@ -5,13 +5,21 @@ import pandas as pd
 from datetime import datetime, timedelta
 import ta
 import numpy as np
+import os
+from dotenv import load_dotenv
 
-app = FastAPI()
+load_dotenv()
+
+app = FastAPI(
+    title="TradeBotCascade API",
+    description="Trading bot API with backtesting and technical analysis",
+    version="0.1.0"
+)
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -66,4 +74,6 @@ async def backtest_strategy(symbol: str, start_date: str, end_date: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("BACKEND_PORT", 8000))
+    host = os.getenv("BACKEND_HOST", "0.0.0.0")
+    uvicorn.run(app, host=host, port=port, reload=True)
