@@ -11,9 +11,27 @@ import requests
 
 load_dotenv()
 
+# Disable SSL warnings and verification for development
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Create a custom session with SSL verification disabled
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
 # Initialize Alpha Vantage
 ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY', 'demo')
+
+# Create custom session for Alpha Vantage
+av_session = requests.Session()
+av_session.verify = False
+
 ts = TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
+
+# Cache for API responses (symbol -> {data, timestamp})
+from datetime import timedelta
+cache = {}
+CACHE_TTL = timedelta(hours=1)  # Cache data for 1 hour
 
 app = FastAPI(
     title="TradeBotCascade API",
@@ -36,16 +54,45 @@ async def root():
 
 @app.get("/stock/{symbol}")
 async def get_stock_data(symbol: str, period: str = "1y"):
+    # Check cache first
+    cache_key = f"{symbol}_{period}"
+    if cache_key in cache:
+        cached_entry = cache[cache_key]
+        if datetime.now() - cached_entry['timestamp'] < CACHE_TTL:
+            print(f"✓ Returning cached data for {symbol}")
+            return {
+                "status": "success",
+                "data": cached_entry['data'],
+                "source": "Alpha Vantage (Cached)"
+            }
+    
     try:
-        # Fetch data from Alpha Vantage
-        data, meta_data = ts.get_daily(symbol=symbol, outputsize='full')
+        # Fetch data from Alpha Vantage using requests directly
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
+        print(f"Fetching data for {symbol} from Alpha Vantage...")
+        response = av_session.get(url, verify=False, timeout=10)
+        print(f"Response status: {response.status_code}")
+        data_json = response.json()
+        print(f"Response keys: {list(data_json.keys())}")
         
-        # Rename columns to match expected format
-        data.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        if 'Time Series (Daily)' not in data_json:
+            error_msg = data_json.get('Note', data_json.get('Error Message', data_json.get('Information', 'Unknown error')))
+            raise Exception(f"No data returned: {error_msg}")
+        
+        # Convert to DataFrame
+        time_series = data_json['Time Series (Daily)']
+        df = pd.DataFrame.from_dict(time_series, orient='index')
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        
+        # Convert to numeric
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col])
         
         # Filter by period (last 252 days for 1 year)
         period_days = 252 if period == "1y" else 30
-        hist = data.head(period_days).sort_index()
+        hist = df.tail(period_days)
         
         # Calculate technical indicators
         hist['SMA_20'] = ta.trend.sma_indicator(hist['Close'], window=20)
@@ -55,10 +102,20 @@ async def get_stock_data(symbol: str, period: str = "1y"):
         # Replace NaN values with None for JSON compatibility
         hist = hist.fillna(value=np.nan).replace([np.nan], [None])
         
+        # Prepare response data
+        response_data = hist.reset_index().to_dict('records')
+        
+        # Store in cache
+        cache[cache_key] = {
+            'data': response_data,
+            'timestamp': datetime.now()
+        }
+        print(f"✓ Cached data for {symbol}")
+        
         return {
             "status": "success",
-            "data": hist.reset_index().to_dict('records'),
-            "source": "Alpha Vantage"
+            "data": response_data,
+            "source": "Alpha Vantage (Real Data)"
         }
     except Exception as e:
         # Fallback to mock data if API fails
