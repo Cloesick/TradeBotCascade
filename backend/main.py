@@ -12,6 +12,9 @@ from algo_strategies import (
     RegimeDetector, ProbabilityCalculator, 
     SegmentGauge, ShortSellingSignals
 )
+from backtesting import BacktestEngine, StrategyLibrary
+from portfolio import PortfolioManager, Position
+from ml_models import MLPredictor, EnsembleSignalGenerator
 
 load_dotenv()
 
@@ -36,6 +39,12 @@ ts = TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
 from datetime import timedelta
 cache = {}
 CACHE_TTL = timedelta(hours=1)  # Cache data for 1 hour
+
+# Global portfolio manager (in production, use database)
+portfolio_manager = PortfolioManager(initial_capital=100000.0)
+
+# Global ML predictor
+ml_predictor = MLPredictor()
 
 app = FastAPI(
     title="TradeBotCascade API",
@@ -609,26 +618,199 @@ async def get_regime_analysis(symbol: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/backtest/{symbol}")
-async def backtest_strategy(symbol: str, start_date: str, end_date: str):
+async def backtest_strategy(symbol: str, strategy: str = "sma_crossover", initial_capital: float = 100000):
+    """
+    Enhanced backtesting with multiple strategies and comprehensive metrics
+    
+    Strategies: sma_crossover, rsi, macd, bollinger_bands, turtle_trader
+    """
     try:
-        stock = yf.Ticker(symbol)
-        hist = stock.history(start=start_date, end=end_date)
+        # Fetch data
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
+        response = av_session.get(url, verify=False, timeout=10)
+        data_json = response.json()
         
-        # Simple strategy example
-        hist['SMA_20'] = ta.trend.sma_indicator(hist['Close'], window=20)
-        hist['SMA_50'] = ta.trend.sma_indicator(hist['Close'], window=50)
+        if 'Time Series (Daily)' not in data_json:
+            raise Exception("No data available")
+        
+        # Convert to DataFrame
+        time_series = data_json['Time Series (Daily)']
+        df = pd.DataFrame.from_dict(time_series, orient='index')
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col])
+        
+        # Take last 2 years
+        df = df.tail(504)
+        
+        # Select strategy
+        strategy_map = {
+            'sma_crossover': StrategyLibrary.sma_crossover,
+            'rsi': StrategyLibrary.rsi_strategy,
+            'macd': StrategyLibrary.macd_strategy,
+            'bollinger_bands': StrategyLibrary.bollinger_bands_strategy,
+            'turtle_trader': StrategyLibrary.turtle_trader_strategy
+        }
+        
+        if strategy not in strategy_map:
+            raise HTTPException(status_code=400, detail=f"Unknown strategy: {strategy}")
         
         # Generate signals
-        hist['Signal'] = np.where(hist['SMA_20'] > hist['SMA_50'], 1, -1)
+        signals = strategy_map[strategy](df)
         
-        # Calculate returns
-        hist['Returns'] = hist['Close'].pct_change()
-        hist['Strategy_Returns'] = hist['Signal'].shift(1) * hist['Returns']
+        # Run backtest
+        engine = BacktestEngine(initial_capital=initial_capital)
+        metrics = engine.run_strategy(df, signals)
         
         return {
             "status": "success",
-            "cumulative_returns": hist['Strategy_Returns'].cumsum().iloc[-1],
-            "data": hist.reset_index().to_dict('records')
+            "symbol": symbol,
+            "strategy": strategy,
+            "metrics": metrics
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Portfolio Management Endpoints
+@app.post("/portfolio/position")
+async def add_portfolio_position(symbol: str, shares: float, price: float, 
+                                 stop_loss: float = None, take_profit: float = None):
+    """Add a position to the portfolio"""
+    result = portfolio_manager.add_position(symbol, shares, price, stop_loss, take_profit)
+    return result
+
+@app.delete("/portfolio/position/{symbol}")
+async def close_portfolio_position(symbol: str, price: float, shares: float = None):
+    """Close a position (full or partial)"""
+    result = portfolio_manager.close_position(symbol, price, shares)
+    return result
+
+@app.get("/portfolio/summary")
+async def get_portfolio_summary():
+    """Get comprehensive portfolio metrics"""
+    summary = portfolio_manager.get_portfolio_summary()
+    return {
+        "status": "success",
+        "portfolio": summary
+    }
+
+@app.get("/portfolio/positions")
+async def get_portfolio_positions():
+    """Get all current positions"""
+    positions = {symbol: pos.to_dict() for symbol, pos in portfolio_manager.positions.items()}
+    return {
+        "status": "success",
+        "positions": positions,
+        "count": len(positions)
+    }
+
+@app.post("/portfolio/optimize")
+async def optimize_portfolio(symbols: List[str], risk_tolerance: str = "moderate"):
+    """
+    Get optimal portfolio allocation
+    
+    risk_tolerance: conservative, moderate, aggressive
+    """
+    # For demo, use mock expected returns and volatilities
+    # In production, calculate from historical data
+    expected_returns = {symbol: 0.10 for symbol in symbols}  # 10% annual return
+    volatilities = {symbol: 0.20 for symbol in symbols}  # 20% volatility
+    
+    recommendations = portfolio_manager.optimize_allocation(
+        symbols, expected_returns, volatilities, risk_tolerance
+    )
+    
+    return {
+        "status": "success",
+        "optimization": recommendations
+    }
+
+# Machine Learning Endpoints
+@app.post("/ml/train/{symbol}")
+async def train_ml_model(symbol: str, model_type: str = "classifier"):
+    """
+    Train ML model for price prediction
+    
+    model_type: classifier (direction) or regressor (price)
+    """
+    try:
+        # Fetch data
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
+        response = av_session.get(url, verify=False, timeout=10)
+        data_json = response.json()
+        
+        if 'Time Series (Daily)' not in data_json:
+            raise Exception("No data available")
+        
+        # Convert to DataFrame
+        time_series = data_json['Time Series (Daily)']
+        df = pd.DataFrame.from_dict(time_series, orient='index')
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col])
+        
+        # Train model
+        if model_type == "classifier":
+            result = ml_predictor.train_direction_classifier(df, lookahead=5)
+        elif model_type == "regressor":
+            result = ml_predictor.train_price_regressor(df, lookahead=5)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown model type: {model_type}")
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "model_type": model_type,
+            "training_results": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/ml/predict/{symbol}")
+async def ml_predict(symbol: str, prediction_type: str = "direction"):
+    """
+    Get ML prediction for stock
+    
+    prediction_type: direction or price
+    """
+    try:
+        # Fetch data
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
+        response = av_session.get(url, verify=False, timeout=10)
+        data_json = response.json()
+        
+        if 'Time Series (Daily)' not in data_json:
+            raise Exception("No data available")
+        
+        # Convert to DataFrame
+        time_series = data_json['Time Series (Daily)']
+        df = pd.DataFrame.from_dict(time_series, orient='index')
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col])
+        
+        # Predict
+        if prediction_type == "direction":
+            result = ml_predictor.predict_direction(df)
+        elif prediction_type == "price":
+            result = ml_predictor.predict_price(df)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown prediction type: {prediction_type}")
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "prediction_type": prediction_type,
+            "prediction": result
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
