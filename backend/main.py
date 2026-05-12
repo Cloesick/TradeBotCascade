@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from typing import List
 import pandas as pd
 from datetime import datetime, timedelta
 import ta
