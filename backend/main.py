@@ -8,6 +8,10 @@ import os
 from dotenv import load_dotenv
 from alpha_vantage.timeseries import TimeSeries
 import requests
+from algo_strategies import (
+    RegimeDetector, ProbabilityCalculator, 
+    SegmentGauge, ShortSellingSignals
+)
 
 load_dotenv()
 
@@ -374,6 +378,235 @@ async def get_industry_leaders(sector: str):
         "top_stocks": symbols,
         "count": len(symbols)
     }
+
+@app.get("/advanced-analysis/{symbol}")
+async def get_advanced_analysis(symbol: str):
+    """
+    Get comprehensive algorithmic analysis including:
+    - Regime detection (Floor/Ceiling, Breakout, MA crossover)
+    - Probability calculations
+    - Segment gauges
+    - Short-selling signals
+    """
+    try:
+        # Fetch data
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
+        response = av_session.get(url, verify=False, timeout=10)
+        data_json = response.json()
+        
+        if 'Time Series (Daily)' not in data_json:
+            raise Exception("No data available")
+        
+        # Convert to DataFrame
+        time_series = data_json['Time Series (Daily)']
+        df = pd.DataFrame.from_dict(time_series, orient='index')
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col])
+        
+        # Take last 252 days (1 year)
+        df = df.tail(252)
+        
+        # Regime Detection
+        regime_sma_50_200 = RegimeDetector.regime_sma(df, 'Close', 50, 200).iloc[-1]
+        regime_ema_50_200 = RegimeDetector.regime_ema(df, 'Close', 50, 200).iloc[-1]
+        regime_turtle = RegimeDetector.turtle_trader(df, 'High', 'Low', 50, 20).iloc[-1]
+        regime_breakout_252 = RegimeDetector.regime_breakout(df, 'High', 'Low', 252).iloc[-1]
+        
+        # Probability Analysis
+        prob_5pct = ProbabilityCalculator.calculate_movement_probability(df, 'Close', target_move=0.05)
+        prob_10pct = ProbabilityCalculator.calculate_movement_probability(df, 'Close', target_move=0.10)
+        monte_carlo_30d = ProbabilityCalculator.monte_carlo_simulation(df, 'Close', days_ahead=30)
+        
+        # Segment Gauges
+        trend_gauge = SegmentGauge.calculate_trend_strength(df, 'Close')
+        momentum_gauge = SegmentGauge.calculate_momentum_gauge(df, 'Close')
+        volatility_gauge = SegmentGauge.calculate_volatility_gauge(df, 'Close', 'High', 'Low')
+        
+        # Short Selling Signal
+        short_signal = ShortSellingSignals.generate_short_signal(df, 'Close', 'High', 'Low')
+        
+        # Current price info
+        current_price = float(df['Close'].iloc[-1])
+        price_change_1d = float((df['Close'].iloc[-1] / df['Close'].iloc[-2] - 1) * 100)
+        price_change_5d = float((df['Close'].iloc[-1] / df['Close'].iloc[-6] - 1) * 100) if len(df) >= 6 else 0
+        price_change_20d = float((df['Close'].iloc[-1] / df['Close'].iloc[-21] - 1) * 100) if len(df) >= 21 else 0
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "current_price": current_price,
+            "price_changes": {
+                "1_day": round(price_change_1d, 2),
+                "5_day": round(price_change_5d, 2),
+                "20_day": round(price_change_20d, 2)
+            },
+            "regime_detection": {
+                "sma_50_200": int(regime_sma_50_200),
+                "ema_50_200": int(regime_ema_50_200),
+                "turtle_trader": int(regime_turtle),
+                "breakout_252d": int(regime_breakout_252),
+                "interpretation": {
+                    "sma": "Bullish" if regime_sma_50_200 > 0 else "Bearish",
+                    "ema": "Bullish" if regime_ema_50_200 > 0 else "Bearish",
+                    "turtle": "Long" if regime_turtle > 0 else "Short" if regime_turtle < 0 else "Neutral",
+                    "breakout": "Bullish" if regime_breakout_252 > 0 else "Bearish"
+                }
+            },
+            "probability_analysis": {
+                "5_percent_move": prob_5pct,
+                "10_percent_move": prob_10pct,
+                "monte_carlo_30_days": monte_carlo_30d
+            },
+            "segment_gauges": {
+                "trend": trend_gauge,
+                "momentum": momentum_gauge,
+                "volatility": volatility_gauge
+            },
+            "short_selling_signal": short_signal,
+            "trading_recommendation": {
+                "action": short_signal['signal'],
+                "confidence": short_signal['confidence'],
+                "score": short_signal['score'],
+                "reasoning": f"Regime: {short_signal['trend_direction']}, Momentum: {short_signal['momentum_direction']}, Volatility: {short_signal['volatility_regime']}"
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/probability/{symbol}")
+async def get_probability_analysis(symbol: str, target_move: float = 0.05, days_ahead: int = 30):
+    """
+    Get detailed probability analysis for stock movements
+    """
+    try:
+        # Fetch data
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
+        response = av_session.get(url, verify=False, timeout=10)
+        data_json = response.json()
+        
+        if 'Time Series (Daily)' not in data_json:
+            raise Exception("No data available")
+        
+        # Convert to DataFrame
+        time_series = data_json['Time Series (Daily)']
+        df = pd.DataFrame.from_dict(time_series, orient='index')
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col])
+        
+        df = df.tail(252)
+        
+        # Calculate probabilities
+        prob_analysis = ProbabilityCalculator.calculate_movement_probability(
+            df, 'Close', target_move=target_move
+        )
+        
+        # Monte Carlo simulation
+        monte_carlo = ProbabilityCalculator.monte_carlo_simulation(
+            df, 'Close', days_ahead=days_ahead
+        )
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "target_move_percent": target_move * 100,
+            "days_ahead": days_ahead,
+            "probability_analysis": prob_analysis,
+            "monte_carlo_simulation": monte_carlo,
+            "interpretation": {
+                "upside_probability": f"{prob_analysis['prob_up'] * 100:.1f}%",
+                "downside_probability": f"{prob_analysis['prob_down'] * 100:.1f}%",
+                "target_upside_probability": f"{prob_analysis['prob_target_up'] * 100:.1f}%",
+                "target_downside_probability": f"{prob_analysis['prob_target_down'] * 100:.1f}%",
+                "expected_price_range": f"${monte_carlo['percentile_25']:.2f} - ${monte_carlo['percentile_75']:.2f}",
+                "profit_probability": f"{monte_carlo['prob_profit'] * 100:.1f}%"
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/regime/{symbol}")
+async def get_regime_analysis(symbol: str):
+    """
+    Get detailed regime analysis using multiple methodologies
+    """
+    try:
+        # Fetch data
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
+        response = av_session.get(url, verify=False, timeout=10)
+        data_json = response.json()
+        
+        if 'Time Series (Daily)' not in data_json:
+            raise Exception("No data available")
+        
+        # Convert to DataFrame
+        time_series = data_json['Time Series (Daily)']
+        df = pd.DataFrame.from_dict(time_series, orient='index')
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col])
+        
+        df = df.tail(252)
+        
+        # Multiple regime methodologies
+        regimes = {
+            "sma_20_50": int(RegimeDetector.regime_sma(df, 'Close', 20, 50).iloc[-1]),
+            "sma_50_200": int(RegimeDetector.regime_sma(df, 'Close', 50, 200).iloc[-1]),
+            "ema_12_26": int(RegimeDetector.regime_ema(df, 'Close', 12, 26).iloc[-1]),
+            "ema_50_200": int(RegimeDetector.regime_ema(df, 'Close', 50, 200).iloc[-1]),
+            "turtle_50_20": int(RegimeDetector.turtle_trader(df, 'High', 'Low', 50, 20).iloc[-1]),
+            "breakout_50d": int(RegimeDetector.regime_breakout(df, 'High', 'Low', 50).iloc[-1]),
+            "breakout_200d": int(RegimeDetector.regime_breakout(df, 'High', 'Low', 200).iloc[-1]),
+            "breakout_252d": int(RegimeDetector.regime_breakout(df, 'High', 'Low', 252).iloc[-1])
+        }
+        
+        # Consensus regime
+        regime_values = list(regimes.values())
+        consensus_score = sum(regime_values)
+        total_indicators = len(regime_values)
+        
+        if consensus_score >= total_indicators * 0.6:
+            consensus = "STRONG BULL"
+        elif consensus_score >= total_indicators * 0.3:
+            consensus = "BULL"
+        elif consensus_score <= -total_indicators * 0.6:
+            consensus = "STRONG BEAR"
+        elif consensus_score <= -total_indicators * 0.3:
+            consensus = "BEAR"
+        else:
+            consensus = "NEUTRAL/MIXED"
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "regimes": regimes,
+            "consensus": {
+                "regime": consensus,
+                "score": consensus_score,
+                "total_indicators": total_indicators,
+                "bullish_count": sum(1 for v in regime_values if v > 0),
+                "bearish_count": sum(1 for v in regime_values if v < 0),
+                "neutral_count": sum(1 for v in regime_values if v == 0)
+            },
+            "interpretation": {
+                "short_term": "Bullish" if regimes["sma_20_50"] > 0 else "Bearish",
+                "medium_term": "Bullish" if regimes["sma_50_200"] > 0 else "Bearish",
+                "long_term": "Bullish" if regimes["breakout_252d"] > 0 else "Bearish",
+                "turtle_signal": "Long" if regimes["turtle_50_20"] > 0 else "Short" if regimes["turtle_50_20"] < 0 else "Neutral"
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/backtest/{symbol}")
 async def backtest_strategy(symbol: str, start_date: str, end_date: str):
