@@ -12,9 +12,20 @@ from algo_strategies import (
     RegimeDetector, ProbabilityCalculator, 
     SegmentGauge, ShortSellingSignals
 )
-from backtesting import BacktestEngine, StrategyLibrary
+from backtesting import BacktestEngine, StrategyLibrary, MonteCarloSimulation
 from portfolio import PortfolioManager, Position
 from ml_models import MLPredictor, EnsembleSignalGenerator
+from advanced_ml import (
+    TripleBarrierLabeling, PurgedKFold, FeatureImportance,
+    FractionalDifferentiation, MetaLabeling, BetSizing
+)
+
+# Try to import deep learning
+try:
+    from ml_models import DeepLearningPredictor
+    DL_AVAILABLE = True
+except ImportError:
+    DL_AVAILABLE = False
 
 load_dotenv()
 
@@ -665,11 +676,21 @@ async def backtest_strategy(symbol: str, strategy: str = "sma_crossover", initia
         engine = BacktestEngine(initial_capital=initial_capital)
         metrics = engine.run_strategy(df, signals)
         
+        # Run Monte Carlo simulation if enough trades
+        monte_carlo_results = None
+        if metrics.get('total_trades', 0) >= 10:
+            monte_carlo_results = MonteCarloSimulation.run_monte_carlo(
+                metrics.get('trades', []),
+                num_simulations=1000,
+                initial_capital=initial_capital
+            )
+        
         return {
             "status": "success",
             "symbol": symbol,
             "strategy": strategy,
-            "metrics": metrics
+            "metrics": metrics,
+            "monte_carlo": monte_carlo_results
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

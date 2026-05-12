@@ -312,3 +312,110 @@ class StrategyLibrary:
         signals[sell_signal] = -1
         
         return signals.fillna(0)
+
+
+class MonteCarloSimulation:
+    """
+    Monte Carlo simulation for strategy robustness testing
+    Based on Kevin Davey's methodology
+    """
+    
+    @staticmethod
+    def run_monte_carlo(
+        trades: List[Dict],
+        num_simulations: int = 1000,
+        initial_capital: float = 100000
+    ) -> Dict:
+        """
+        Run Monte Carlo simulation by randomly reordering trades
+        
+        Args:
+            trades: List of trade dictionaries with 'pnl' key
+            num_simulations: Number of simulations to run
+            initial_capital: Starting capital
+        
+        Returns:
+            Dictionary with simulation results
+        """
+        if not trades or len(trades) < 10:
+            return {
+                'success': False,
+                'message': 'Insufficient trades for Monte Carlo simulation'
+            }
+        
+        # Extract P&Ls
+        pnls = [trade.get('pnl', 0) for trade in trades if 'pnl' in trade]
+        
+        if len(pnls) < 10:
+            return {
+                'success': False,
+                'message': 'Insufficient P&L data'
+            }
+        
+        simulation_results = []
+        final_equities = []
+        max_drawdowns = []
+        
+        for _ in range(num_simulations):
+            # Randomly shuffle trades
+            shuffled_pnls = np.random.choice(pnls, size=len(pnls), replace=True)
+            
+            # Calculate equity curve
+            equity = initial_capital
+            equity_curve = [equity]
+            peak = equity
+            max_dd = 0
+            
+            for pnl in shuffled_pnls:
+                equity += pnl
+                equity_curve.append(equity)
+                
+                # Track drawdown
+                if equity > peak:
+                    peak = equity
+                dd = (equity - peak) / peak if peak > 0 else 0
+                max_dd = min(max_dd, dd)
+            
+            final_equities.append(equity)
+            max_drawdowns.append(max_dd * 100)
+            
+            simulation_results.append({
+                'final_equity': equity,
+                'total_return': (equity / initial_capital - 1) * 100,
+                'max_drawdown': max_dd * 100
+            })
+        
+        # Calculate statistics
+        final_equities = np.array(final_equities)
+        max_drawdowns = np.array(max_drawdowns)
+        
+        returns = (final_equities / initial_capital - 1) * 100
+        
+        return {
+            'success': True,
+            'num_simulations': num_simulations,
+            'statistics': {
+                'mean_return': float(np.mean(returns)),
+                'median_return': float(np.median(returns)),
+                'std_return': float(np.std(returns)),
+                'min_return': float(np.min(returns)),
+                'max_return': float(np.max(returns)),
+                'percentile_5': float(np.percentile(returns, 5)),
+                'percentile_25': float(np.percentile(returns, 25)),
+                'percentile_75': float(np.percentile(returns, 75)),
+                'percentile_95': float(np.percentile(returns, 95)),
+                'probability_profit': float((returns > 0).sum() / num_simulations),
+                'mean_max_drawdown': float(np.mean(max_drawdowns)),
+                'worst_drawdown': float(np.min(max_drawdowns))
+            },
+            'confidence_intervals': {
+                '90_percent': {
+                    'lower': float(np.percentile(returns, 5)),
+                    'upper': float(np.percentile(returns, 95))
+                },
+                '95_percent': {
+                    'lower': float(np.percentile(returns, 2.5)),
+                    'upper': float(np.percentile(returns, 97.5))
+                }
+            }
+        }
