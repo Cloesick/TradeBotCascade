@@ -385,27 +385,35 @@ async def get_current_active_user(
     return current_user
 
 
-async def require_role(required_role: UserRole):
-    """Dependency to require specific role"""
-    async def role_checker(current_user: UserInDB = Depends(get_current_active_user)):
-        role_hierarchy = {
-            UserRole.VIEWER: 0,
-            UserRole.TRADER: 1,
-            UserRole.ADMIN: 2
-        }
-        
-        if role_hierarchy[current_user.role] < role_hierarchy[required_role]:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Insufficient permissions. Required role: {required_role.value}"
-            )
-        
-        return current_user
-    
-    return role_checker
+# Role hierarchy for permission checking
+ROLE_HIERARCHY = {
+    UserRole.VIEWER: 0,
+    UserRole.TRADER: 1,
+    UserRole.ADMIN: 2
+}
 
 
 # Role-specific dependencies
-require_admin = require_role(UserRole.ADMIN)
-require_trader = require_role(UserRole.TRADER)
-require_viewer = require_role(UserRole.VIEWER)
+async def require_admin(current_user: UserInDB = Depends(get_current_active_user)):
+    """Require ADMIN role"""
+    if ROLE_HIERARCHY[current_user.role] < ROLE_HIERARCHY[UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Insufficient permissions. Required role: admin"
+        )
+    return current_user
+
+
+async def require_trader(current_user: UserInDB = Depends(get_current_active_user)):
+    """Require TRADER role or higher"""
+    if ROLE_HIERARCHY[current_user.role] < ROLE_HIERARCHY[UserRole.TRADER]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Insufficient permissions. Required role: trader"
+        )
+    return current_user
+
+
+async def require_viewer(current_user: UserInDB = Depends(get_current_active_user)):
+    """Require VIEWER role or higher (any authenticated user)"""
+    return current_user
