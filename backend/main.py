@@ -20,6 +20,11 @@ from advanced_ml import (
     TripleBarrierLabeling, PurgedKFold, FeatureImportance,
     FractionalDifferentiation, MetaLabeling, BetSizing
 )
+from auth import (
+    User, UserCreate, UserLogin, Token, UserInDB, UserRole,
+    user_db, TokenManager, get_current_user, get_current_active_user,
+    get_current_user_optional, require_admin, require_trader, require_viewer
+)
 
 # Try to import deep learning
 try:
@@ -72,6 +77,184 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============================================================================
+# AUTHENTICATION ENDPOINTS
+# ============================================================================
+
+@app.post("/auth/register", response_model=User, tags=["Authentication"])
+async def register(user_create: UserCreate):
+    """
+    Register a new user
+    
+    Password requirements:
+    - At least 8 characters
+    - At least one uppercase letter
+    - At least one lowercase letter
+    - At least one digit
+    """
+    try:
+        user = user_db.create_user(user_create, role=UserRole.VIEWER)
+        return User(**user.dict())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/auth/login", response_model=Token, tags=["Authentication"])
+async def login(user_login: UserLogin):
+    """
+    Login with username and password
+    
+    Returns JWT access token and refresh token
+    """
+    user = user_db.authenticate_user(user_login.username, user_login.password)
+    
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Create tokens
+    access_token = TokenManager.create_access_token(
+        data={"sub": user.username, "role": user.role.value}
+    )
+    refresh_token = TokenManager.create_refresh_token(
+        data={"sub": user.username, "role": user.role.value}
+    )
+    
+    return Token(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer",
+        expires_in=1800  # 30 minutes
+    )
+
+
+@app.post("/auth/refresh", response_model=Token, tags=["Authentication"])
+async def refresh_token(refresh_token: str):
+    """
+    Refresh access token using refresh token
+    """
+    token_data = TokenManager.verify_token(refresh_token, token_type="refresh")
+    
+    if not token_data or not token_data.username:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid refresh token"
+        )
+    
+    user = user_db.get_user(token_data.username)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    
+    # Create new tokens
+    access_token = TokenManager.create_access_token(
+        data={"sub": user.username, "role": user.role.value}
+    )
+    new_refresh_token = TokenManager.create_refresh_token(
+        data={"sub": user.username, "role": user.role.value}
+    )
+    
+    return Token(
+        access_token=access_token,
+        refresh_token=new_refresh_token,
+        token_type="bearer",
+        expires_in=1800
+    )
+
+
+@app.get("/auth/me", response_model=User, tags=["Authentication"])
+async def get_current_user_info(current_user: UserInDB = Depends(get_current_active_user)):
+    """
+    Get current user information
+    
+    Requires: Valid JWT token
+    """
+    return User(**current_user.dict())
+
+
+@app.post("/auth/api-key", tags=["Authentication"])
+async def create_api_key(
+    key_name: str,
+    current_user: UserInDB = Depends(get_current_active_user)
+):
+    """
+    Create API key for programmatic access
+    
+    Requires: Valid JWT token
+    
+    Note: API key is shown only once. Store it securely!
+    """
+    try:
+        api_key = user_db.create_api_key(current_user.username, key_name)
+        return {
+            "success": True,
+            "api_key": api_key,
+            "message": "API key created successfully. Store it securely - it won't be shown again!"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/auth/users", tags=["Authentication", "Admin"])
+async def list_users(current_user: UserInDB = Depends(require_admin)):
+    """
+    List all users (Admin only)
+    
+    Requires: Admin role
+    """
+    users = [User(**user.dict()) for user in user_db.users.values()]
+    return {"users": users, "count": len(users)}
+
+
+@app.put("/auth/users/{username}/role", tags=["Authentication", "Admin"])
+async def update_user_role(
+    username: str,
+    new_role: UserRole,
+    current_user: UserInDB = Depends(require_admin)
+):
+    """
+    Update user role (Admin only)
+    
+    Requires: Admin role
+    """
+    user = user_db.get_user(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user.role = new_role
+    return {"success": True, "message": f"User {username} role updated to {new_role.value}"}
+
+
+@app.put("/auth/users/{username}/disable", tags=["Authentication", "Admin"])
+async def disable_user(
+    username: str,
+    disabled: bool,
+    current_user: UserInDB = Depends(require_admin)
+):
+    """
+    Enable/disable user account (Admin only)
+    
+    Requires: Admin role
+    """
+    user = user_db.get_user(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if user.username == current_user.username:
+        raise HTTPException(status_code=400, detail="Cannot disable your own account")
+    
+    user.disabled = disabled
+    status_text = "disabled" if disabled else "enabled"
+    return {"success": True, "message": f"User {username} {status_text}"}
+
+
+# ============================================================================
+# PUBLIC ENDPOINTS (No authentication required)
+# ============================================================================
 
 def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate comprehensive technical indicators"""
@@ -696,45 +879,72 @@ async def backtest_strategy(symbol: str, strategy: str = "sma_crossover", initia
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# Portfolio Management Endpoints
-@app.post("/portfolio/position")
-async def add_portfolio_position(symbol: str, shares: float, price: float, 
-                                 stop_loss: float = None, take_profit: float = None):
-    """Add a position to the portfolio"""
+# ============================================================================
+# PORTFOLIO MANAGEMENT ENDPOINTS (Requires TRADER role)
+# ============================================================================
+
+@app.post("/portfolio/position", tags=["Portfolio"])
+async def add_portfolio_position(
+    symbol: str, 
+    shares: float, 
+    price: float, 
+    stop_loss: float = None, 
+    take_profit: float = None,
+    current_user: UserInDB = Depends(require_trader)
+):
+    """
+    Add a position to the portfolio
+    
+    Requires: TRADER role or higher
+    """
     result = portfolio_manager.add_position(symbol, shares, price, stop_loss, take_profit)
     return result
 
-@app.delete("/portfolio/position/{symbol}")
-async def close_portfolio_position(symbol: str, price: float, shares: float = None):
-    """Close a position (full or partial)"""
+@app.delete("/portfolio/position/{symbol}", tags=["Portfolio"])
+async def close_portfolio_position(
+    symbol: str, 
+    price: float, 
+    shares: float = None,
+    current_user: UserInDB = Depends(require_trader)
+):
+    """
+    Close a position (full or partial)
+    
+    Requires: TRADER role or higher
+    """
     result = portfolio_manager.close_position(symbol, price, shares)
     return result
 
-@app.get("/portfolio/summary")
-async def get_portfolio_summary():
-    """Get comprehensive portfolio metrics"""
-    summary = portfolio_manager.get_portfolio_summary()
-    return {
-        "status": "success",
-        "portfolio": summary
-    }
-
-@app.get("/portfolio/positions")
-async def get_portfolio_positions():
-    """Get all current positions"""
-    positions = {symbol: pos.to_dict() for symbol, pos in portfolio_manager.positions.items()}
-    return {
-        "status": "success",
-        "positions": positions,
-        "count": len(positions)
-    }
-
-@app.post("/portfolio/optimize")
-async def optimize_portfolio(symbols: List[str], risk_tolerance: str = "moderate"):
+@app.get("/portfolio/summary", tags=["Portfolio"])
+async def get_portfolio_summary(current_user: UserInDB = Depends(require_viewer)):
     """
-    Get optimal portfolio allocation
+    Get portfolio summary
     
-    risk_tolerance: conservative, moderate, aggressive
+    Requires: VIEWER role or higher
+    """
+    summary = portfolio_manager.get_summary()
+    return {"status": "success", "portfolio": summary}
+
+@app.get("/portfolio/positions", tags=["Portfolio"])
+async def get_all_positions(current_user: UserInDB = Depends(require_viewer)):
+    """
+    Get all open positions
+    
+    Requires: VIEWER role or higher
+    """
+    positions = portfolio_manager.get_all_positions()
+    return {"status": "success", "positions": positions, "count": len(positions)}
+
+@app.post("/portfolio/optimize", tags=["Portfolio"])
+async def optimize_portfolio(
+    symbols: List[str], 
+    risk_tolerance: str = "moderate",
+    current_user: UserInDB = Depends(require_trader)
+):
+    """
+    Optimize portfolio allocation
+    
+    Requires: TRADER role or higher
     """
     # For demo, use mock expected returns and volatilities
     # In production, calculate from historical data
@@ -750,11 +960,20 @@ async def optimize_portfolio(symbols: List[str], risk_tolerance: str = "moderate
         "optimization": recommendations
     }
 
-# Machine Learning Endpoints
-@app.post("/ml/train/{symbol}")
-async def train_ml_model(symbol: str, model_type: str = "classifier"):
+# ============================================================================
+# MACHINE LEARNING ENDPOINTS (Requires TRADER role)
+# ============================================================================
+
+@app.post("/ml/train/{symbol}", tags=["Machine Learning"])
+async def train_ml_model(
+    symbol: str, 
+    model_type: str = "classifier",
+    current_user: UserInDB = Depends(require_trader)
+):
     """
     Train ML model for price prediction
+    
+    Requires: TRADER role or higher
     
     model_type: classifier (direction) or regressor (price)
     """
@@ -794,10 +1013,16 @@ async def train_ml_model(symbol: str, model_type: str = "classifier"):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/ml/predict/{symbol}")
-async def ml_predict(symbol: str, prediction_type: str = "direction"):
+@app.get("/ml/predict/{symbol}", tags=["Machine Learning"])
+async def ml_predict(
+    symbol: str, 
+    prediction_type: str = "direction",
+    current_user: UserInDB = Depends(require_viewer)
+):
     """
     Get ML prediction for stock
+    
+    Requires: VIEWER role or higher
     
     prediction_type: direction or price
     """
