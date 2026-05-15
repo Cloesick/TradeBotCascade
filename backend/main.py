@@ -16,6 +16,7 @@ from algo_strategies import (
 from backtesting import BacktestEngine, StrategyLibrary, MonteCarloSimulation
 from portfolio import PortfolioManager, Position
 from ml_models import MLPredictor, EnsembleSignalGenerator
+from worldmonitor_strategy import WorldMonitorStrategy, MacroSignal, SignalStrength
 from advanced_ml import (
     TripleBarrierLabeling, PurgedKFold, FeatureImportance,
     FractionalDifferentiation, MetaLabeling, BetSizing
@@ -62,6 +63,9 @@ portfolio_manager = PortfolioManager(initial_capital=100000.0)
 
 # Global ML predictor
 ml_predictor = MLPredictor()
+
+# Global WorldMonitor strategy
+worldmonitor_strategy = WorldMonitorStrategy()
 
 app = FastAPI(
     title="TradeBotCascade API",
@@ -1061,6 +1065,206 @@ async def ml_predict(
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================================================
+# WORLDMONITOR MACRO STRATEGY ENDPOINTS
+# ============================================================================
+
+@app.get("/worldmonitor/macro-signal/{symbol}", tags=["WorldMonitor Strategy"])
+async def get_macro_signal(
+    symbol: str,
+    current_user: UserInDB = Depends(require_viewer)
+):
+    """
+    Get WorldMonitor 7-signal macro radar composite signal
+    
+    Analyzes 7 macro indicators:
+    1. Central Bank Policy
+    2. Credit Spreads
+    3. Volatility Index
+    4. Currency Strength
+    5. Commodity Prices
+    6. Yield Curve
+    7. Market Breadth
+    
+    Returns: BUY (risk-on), CASH (risk-off), or NEUTRAL
+    
+    Requires: VIEWER role or higher
+    """
+    try:
+        # Fetch data
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
+        response = av_session.get(url, verify=False, timeout=10)
+        data_json = response.json()
+        
+        if 'Time Series (Daily)' not in data_json:
+            raise Exception("No data available")
+        
+        # Convert to DataFrame
+        time_series = data_json['Time Series (Daily)']
+        df = pd.DataFrame.from_dict(time_series, orient='index')
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        
+        # Rename columns
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col])
+        
+        # Get composite signal
+        composite = worldmonitor_strategy.calculate_composite_signal(df)
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "macro_signal": composite['macro_signal'],
+            "signal_strength": composite['signal_strength'],
+            "composite_score": round(composite['composite_score'], 3),
+            "signals_summary": {
+                "bullish": composite['bullish_signals'],
+                "bearish": composite['bearish_signals'],
+                "neutral": composite['neutral_signals']
+            },
+            "position_recommendation": {
+                "size_multiplier": composite['position_size_multiplier'],
+                "description": f"Recommended position size: {composite['position_size_multiplier']*100:.0f}% of capital"
+            },
+            "signals_breakdown": composite['signals_breakdown'],
+            "timestamp": composite['timestamp']
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/worldmonitor/trading-decision/{symbol}", tags=["WorldMonitor Strategy"])
+async def get_trading_decision(
+    symbol: str,
+    current_position: float = 0,
+    current_user: UserInDB = Depends(require_trader)
+):
+    """
+    Get WorldMonitor trading decision (BUY/SELL/HOLD)
+    
+    Based on 7-signal macro radar, determines optimal position size
+    and provides actionable trading recommendation.
+    
+    Args:
+        symbol: Stock symbol
+        current_position: Current position size (0-1, where 1 = 100% invested)
+    
+    Returns: Action (BUY/SELL/HOLD) with size and reasoning
+    
+    Requires: TRADER role or higher
+    """
+    try:
+        # Validate current_position
+        if not 0 <= current_position <= 1:
+            raise HTTPException(status_code=400, detail="current_position must be between 0 and 1")
+        
+        # Fetch data
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
+        response = av_session.get(url, verify=False, timeout=10)
+        data_json = response.json()
+        
+        if 'Time Series (Daily)' not in data_json:
+            raise Exception("No data available")
+        
+        # Convert to DataFrame
+        time_series = data_json['Time Series (Daily)']
+        df = pd.DataFrame.from_dict(time_series, orient='index')
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        
+        # Rename columns
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col])
+        
+        # Get trading decision
+        decision = worldmonitor_strategy.generate_trading_decision(df, current_position)
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "action": decision['action'],
+            "current_position": decision['current_position'],
+            "target_position": decision['target_position'],
+            "size_change": round(decision['size_change'], 3),
+            "macro_signal": decision['macro_signal'],
+            "signal_strength": decision['signal_strength'],
+            "composite_score": round(decision['composite_score'], 3),
+            "reason": decision['reason'],
+            "signals_summary": decision['signals_summary'],
+            "detailed_signals": decision['detailed_signals'],
+            "timestamp": decision['timestamp']
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/worldmonitor/backtest/{symbol}", tags=["WorldMonitor Strategy"])
+async def backtest_worldmonitor(
+    symbol: str,
+    initial_capital: float = 100000,
+    current_user: UserInDB = Depends(require_trader)
+):
+    """
+    Backtest WorldMonitor 7-signal macro strategy
+    
+    Tests the strategy's performance using historical data.
+    Strategy dynamically adjusts position size based on macro signals.
+    
+    Args:
+        symbol: Stock symbol
+        initial_capital: Starting capital (default: $100,000)
+    
+    Returns: Performance metrics and trade history
+    
+    Requires: TRADER role or higher
+    """
+    try:
+        # Fetch data
+        url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
+        response = av_session.get(url, verify=False, timeout=10)
+        data_json = response.json()
+        
+        if 'Time Series (Daily)' not in data_json:
+            raise Exception("No data available")
+        
+        # Convert to DataFrame
+        time_series = data_json['Time Series (Daily)']
+        df = pd.DataFrame.from_dict(time_series, orient='index')
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        
+        # Rename columns
+        df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col])
+        
+        # Run backtest
+        results = worldmonitor_strategy.backtest_strategy(df, initial_capital)
+        
+        if 'error' in results:
+            raise HTTPException(status_code=400, detail=results['error'])
+        
+        return {
+            "status": "success",
+            "symbol": symbol,
+            "strategy": "WorldMonitor 7-Signal Macro Radar",
+            "initial_capital": results['initial_capital'],
+            "final_equity": round(results['final_equity'], 2),
+            "total_return_pct": round(results['total_return_pct'], 2),
+            "total_trades": results['total_trades'],
+            "sharpe_ratio": round(results['sharpe_ratio'], 2),
+            "max_drawdown_pct": round(results['max_drawdown_pct'], 2),
+            "trades": results['trades'][-10:],  # Last 10 trades
+            "equity_curve": results['equity_curve'][-50:]  # Last 50 data points
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 if __name__ == "__main__":
     import uvicorn
