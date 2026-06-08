@@ -36,20 +36,14 @@ except ImportError:
 
 load_dotenv()
 
-# Disable SSL warnings and verification for development
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# Create a custom session with SSL verification disabled
-import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
-
 # Initialize Alpha Vantage
 ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY', 'demo')
 
-# Create custom session for Alpha Vantage
+# Custom session for Alpha Vantage. TLS certificate verification is left at its
+# secure default (enabled). If you are behind a TLS-intercepting corporate proxy,
+# point requests at a proper CA bundle via the REQUESTS_CA_BUNDLE env var rather
+# than disabling verification.
 av_session = requests.Session()
-av_session.verify = False
 
 ts = TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
 
@@ -394,7 +388,7 @@ async def get_stock_data(symbol: str, period: str = "1y"):
         # Fetch data from Alpha Vantage using requests directly
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
         print(f"Fetching data for {symbol} from Alpha Vantage...")
-        response = av_session.get(url, verify=False, timeout=10)
+        response = av_session.get(url, timeout=10)
         print(f"Response status: {response.status_code}")
         data_json = response.json()
         print(f"Response keys: {list(data_json.keys())}")
@@ -477,7 +471,7 @@ async def get_trading_signals(symbol: str):
     try:
         # Fetch recent data
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=compact&apikey={ALPHA_VANTAGE_API_KEY}'
-        response = av_session.get(url, verify=False, timeout=10)
+        response = av_session.get(url, timeout=10)
         data_json = response.json()
         
         if 'Time Series (Daily)' not in data_json:
@@ -533,7 +527,7 @@ async def compare_stocks(symbols: str):
     for symbol in symbol_list:
         try:
             url = f'https://www.alphavantage.co/query?function=OVERVIEW&symbol={symbol}&apikey={ALPHA_VANTAGE_API_KEY}'
-            response = av_session.get(url, verify=False, timeout=10)
+            response = av_session.get(url, timeout=10)
             data = response.json()
             
             if 'Symbol' in data:
@@ -599,7 +593,7 @@ async def get_advanced_analysis(symbol: str):
     try:
         # Fetch data
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
-        response = av_session.get(url, verify=False, timeout=10)
+        response = av_session.get(url, timeout=10)
         data_json = response.json()
         
         if 'Time Series (Daily)' not in data_json:
@@ -693,7 +687,7 @@ async def get_probability_analysis(symbol: str, target_move: float = 0.05, days_
     try:
         # Fetch data
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
-        response = av_session.get(url, verify=False, timeout=10)
+        response = av_session.get(url, timeout=10)
         data_json = response.json()
         
         if 'Time Series (Daily)' not in data_json:
@@ -748,7 +742,7 @@ async def get_regime_analysis(symbol: str):
     try:
         # Fetch data
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
-        response = av_session.get(url, verify=False, timeout=10)
+        response = av_session.get(url, timeout=10)
         data_json = response.json()
         
         if 'Time Series (Daily)' not in data_json:
@@ -826,7 +820,7 @@ async def backtest_strategy(symbol: str, strategy: str = "sma_crossover", initia
     try:
         # Fetch data
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
-        response = av_session.get(url, verify=False, timeout=10)
+        response = av_session.get(url, timeout=10)
         data_json = response.json()
         
         if 'Time Series (Daily)' not in data_json:
@@ -984,7 +978,7 @@ async def train_ml_model(
     try:
         # Fetch data
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
-        response = av_session.get(url, verify=False, timeout=10)
+        response = av_session.get(url, timeout=10)
         data_json = response.json()
         
         if 'Time Series (Daily)' not in data_json:
@@ -1033,7 +1027,7 @@ async def ml_predict(
     try:
         # Fetch data
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
-        response = av_session.get(url, verify=False, timeout=10)
+        response = av_session.get(url, timeout=10)
         data_json = response.json()
         
         if 'Time Series (Daily)' not in data_json:
@@ -1095,7 +1089,7 @@ async def get_macro_signal(
     try:
         # Fetch data
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
-        response = av_session.get(url, verify=False, timeout=10)
+        response = av_session.get(url, timeout=10)
         data_json = response.json()
         
         if 'Time Series (Daily)' not in data_json:
@@ -1164,7 +1158,7 @@ async def get_trading_decision(
         
         # Fetch data
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
-        response = av_session.get(url, verify=False, timeout=10)
+        response = av_session.get(url, timeout=10)
         data_json = response.json()
         
         if 'Time Series (Daily)' not in data_json:
@@ -1226,7 +1220,7 @@ async def backtest_worldmonitor(
     try:
         # Fetch data
         url = f'https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}'
-        response = av_session.get(url, verify=False, timeout=10)
+        response = av_session.get(url, timeout=10)
         data_json = response.json()
         
         if 'Time Series (Daily)' not in data_json:
