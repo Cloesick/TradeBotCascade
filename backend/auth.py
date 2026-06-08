@@ -3,26 +3,54 @@ Authentication and Security Module
 JWT-based authentication with role-based access control
 """
 
+import logging
+import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 from fastapi import Depends, HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, validator
+from dotenv import load_dotenv
+import bcrypt
 import secrets
 import hashlib
 from enum import Enum
 
+# auth is imported before main.py calls load_dotenv(), so load the .env here
+# too (idempotent) to ensure SECRET_KEY is available at import time.
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
 
 # Security Configuration
-SECRET_KEY = secrets.token_urlsafe(32)  # In production, load from environment
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-REFRESH_TOKEN_EXPIRE_DAYS = 7
+# Load the JWT signing key from the environment so it stays stable across
+# restarts (a regenerated key would invalidate every issued token/session).
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    # Fail fast in production: signing with an ephemeral key silently breaks
+    # all existing sessions on every restart. Allow a generated dev-only
+    # fallback so local development still works without configuration.
+    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+        raise RuntimeError(
+            "SECRET_KEY environment variable is required in production. "
+            "Set it to a stable, secret value, e.g. `python -c \"import secrets; "
+            "print(secrets.token_urlsafe(32))\"`."
+        )
+    SECRET_KEY = secrets.token_urlsafe(32)
+    logger.warning(
+        "SECRET_KEY is not set; using an ephemeral development key. "
+        "Tokens will be invalidated on restart. Set SECRET_KEY in your .env."
+    )
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
+# bcrypt operates on at most 72 bytes of input; longer passwords are truncated
+# to keep hashing and verification consistent (standard bcrypt behavior).
+BCRYPT_MAX_BYTES = 72
 
 # Security schemes
 security = HTTPBearer()
@@ -113,17 +141,22 @@ class APIKey(BaseModel):
 
 
 class PasswordHash:
-    """Password hashing utilities"""
-    
+    """Password hashing utilities (bcrypt, used directly)"""
+
     @staticmethod
     def hash_password(password: str) -> str:
         """Hash a password using bcrypt"""
-        return pwd_context.hash(password)
-    
+        pwd_bytes = password.encode("utf-8")[:BCRYPT_MAX_BYTES]
+        return bcrypt.hashpw(pwd_bytes, bcrypt.gensalt()).decode("utf-8")
+
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
         """Verify a password against its hash"""
-        return pwd_context.verify(plain_password, hashed_password)
+        pwd_bytes = plain_password.encode("utf-8")[:BCRYPT_MAX_BYTES]
+        try:
+            return bcrypt.checkpw(pwd_bytes, hashed_password.encode("utf-8"))
+        except (ValueError, TypeError):
+            return False
 
 
 class TokenManager:
